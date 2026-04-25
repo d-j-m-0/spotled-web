@@ -61,7 +61,7 @@
         <p><label>Set Text <input id="text2" type="text" value="hello" maxlength="120" /></label><button id="set_text2">Set Text</button><button id="set_time">Set Time</button><button id="clear2">Clear</button></p>
         <p><label>Font Size: <input type="range" id="font_size" min="10" max="20" value="16" step="0.5" /></label><span id="font_size_value">16px</span></p>
         <p><label>Letter Spacing: <input type="range" id="letterSpacing" min="-5" max="5" value="-1" step="0.2" /></label><span id="letterSpacingValue">-1px</span></p>
-        <p><label>Speed: <input type="range" id="speed" min="1" max="200" value="20" disabled /></label></p>
+        <p><label>Speed: <input type="range" id="speed" min="0" max="200" value="0" disabled /></label></p>
         <canvas id="canvas2" style="image-rendering: pixelated; border: 1px solid; width:100%" width="48" height="12"></canvas><br/>
     </fieldset>
     <fieldset>
@@ -341,9 +341,9 @@
             }
 
             let offset = 10 + this.text.length*(10+9)
-            uint8.set(new Uint8Array(new SpeedData(this.speed).serialize()), offset)
-            uint8.set(new Uint8Array(new TimeData(0).serialize()), offset+8)
-            uint8.set(new Uint8Array(new EffectData(0).serialize()), offset+8+10) // TODO
+            uint8.set(new Uint8Array(new SpeedData(0).serialize()), offset)
+            uint8.set(new Uint8Array(new TimeData(this.speed).serialize()), offset+8)
+            uint8.set(new Uint8Array(new EffectData(this.effect).serialize()), offset+8+10) // TODO
             return v.buffer
         }
     }
@@ -418,10 +418,11 @@
             }
             uint8.set(new Uint8Array(new TimeData(this.time).serialize()), offset)
             uint8.set(new Uint8Array(new SpeedData(this.speed).serialize()), offset+10)
-            uint8.set(new Uint8Array(new EffectData(this.effect).serialize()), offset+8+10) // TODO
+            uint8.set(new Uint8Array(new EffectData(this.effect).serialize()), offset+ 10 + 8) // TODO
             return v.buffer
         }
     }
+
 
     class FrameData {
         constructor(width, height, bitmap, depth=1) {
@@ -432,13 +433,13 @@
         }
 
         serialize() {
-            const v = new DataView(new ArrayBuffer(12 + this.bitmap.byteLength))
+            const v = new DataView(new ArrayBuffer(11 + this.bitmap.byteLength + 1))
             const uint8 = new Uint8Array(v.buffer)
-            v.setUint32(0, 12 + this.bitmap.byteLength) // length
+            v.setUint32(0, 11 + this.bitmap.byteLength + 1) // length
             v.setUint16(4, 96) // type
             v.setUint16(6, this.width)
             v.setUint16(8, this.height)
-            v.setUint8(10, this.depth)
+            v.setUint8(10, calcChecksum(v.buffer.slice(0,10)))
             uint8.set(new Uint8Array(this.bitmap), 11)
             v.setUint8(11 + this.bitmap.byteLength, calcChecksum(v.buffer))
             return v.buffer
@@ -610,7 +611,8 @@
                 throw `senddata error: ${response.errorCode}`
             }
 
-            const sendSize = 20
+//            const sendSize = 20
+const sendSize = 182
             const unackCount = Math.floor(this.bufferSize / sendSize)
             let sentPayloads = 0
 
@@ -687,21 +689,23 @@
             if (minLen % 8 != 0) {
                 minLen += 8 - (minLen % 8)
             }
-
+// Work out how many bytes are needed to represent "width" bits.
+const bitmap_byte = Math.ceil(charData[0].length / 8);
             const trueChar = '@'
-            const bitmap = new Uint8Array(new ArrayBuffer(charData.length))
+            const bitmap = new Uint8Array(new ArrayBuffer(bitmap_byte * charData.length))
             for (let i = 0; i < charData.length; i++) {
                 if (charData[i].length < minLen) {
-                    charData[i] = charData[i].padEnd('.', minLen)
+                    charData[i] = charData[i].padEnd(minLen, '.')
                 } else {
-                    excess = charData[i].length % 8
+                    const excess = charData[i].length % 8
                     if (excess != 0) {
                         charData[i] += '.'.repeat(8 - excess)
                     }
                 }
 
+// Tweak the bitmap value for larger bitmaps.
                 for (let j = 0; j < charData[i].length; j += 8) {
-                    bitmap[i] = ((charData[i][j] == trueChar) << 7) |
+                    bitmap[(i * bitmap_byte) + (j / 8)] = ((charData[i][j] == trueChar) << 7) |
                         ((charData[i][j+1] == trueChar) << 6) |
                         ((charData[i][j+2] == trueChar) << 5) |
                         ((charData[i][j+3] == trueChar) << 4) |
@@ -720,12 +724,14 @@
             for (let i = 0; i < text.length; i++) {
                 const char = text[i]
                 let charData = this.getChar(char)
-                let height = charData.length
                 let width = charData[0].length
+                let height = charData.length
                 if (height < minHeight) {
                     charData = Font.padCharacterToHeight(charData, minHeight, width)
                     height = minHeight
                 }
+                height = charData.length
+                width = charData[0].length
                 // if (width < height) {
                 //     width = height
                 // }
@@ -814,10 +820,15 @@
         }
 
         async setTextByChars(text) {
-            const font = await this.loadFont('fonts/6x10.yaff')
+//            const font = await this.loadFont('fonts/6x10.yaff')
+//            const font = await this.loadFont('http://localhost:8080/fonts/6x10.yaff')
+            const font = await this.loadFont('http://localhost:8080/fonts/16x16.yaff')
             const fontCharacters = font.createFontCharacters(text, this.connection.displayInfo.height)
+        let speed = Number(document.querySelector('#speed').value);
+        speed = (speed === 0) ? 0 : ((201 - speed) * 100);
+
             await this.connection.sendDataInternal(new SendDataCommand(32772, new FontData(fontCharacters).serialize()))
-            await this.connection.sendDataInternal(new SendDataCommand(32772, new TextData(text, 0, "SCROLL_LEFT").serialize()))
+            await this.connection.sendDataInternal(new SendDataCommand(32772, new TextData(text, speed, 3 ).serialize()))
         }
 
         async setAnimation(bitmaps, time=0, speed=0, effects=0) {
@@ -831,7 +842,7 @@
         }
 
         async clearDisplay() {
-            const bitmap = new Uint8Array(Math.floor(this.connection.displayInfo.width * this.connection.displayInfo.height / 8))
+            const bitmap = new Uint8Array(Math.floor(this.connection.displayInfo.width * this.connection.displayInfo.height * 3))
             bitmap.fill(0x00)
             const frames = [new FrameData(this.connection.displayInfo.width, this.connection.displayInfo.height, bitmap)]
             await this.connection.sendDataInternal(new SendDataCommand(32772, new AnimationData(frames, 0, 0, 0).serialize()))
@@ -845,7 +856,7 @@
 
     const fontSelector = document.querySelector('#font')
 
-    canvasctx.fillStyle="white"
+    canvasctx.fillStyle="black"
     canvasctx.fillRect(0, 0, canvas.width, canvas.height)
 
     let isDrawing = false
@@ -858,7 +869,10 @@
         const img = document.createElement('img')
         img.onerror = (e) => deferred.reject(e)
         img.onload = (e) => {
-            canvasctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+              // Scale the image to the drawing canvas.
+            canvasctx.drawImage(img,
+                0, 0, img.width, img.height,
+                0, 0, canvas.width, canvas.height)
             thresholdCanvas(canvasctx, canvas.width, canvas.height)
             deferred.resolve()
         }
@@ -896,11 +910,11 @@
         isDrawing = (e.button == 0)
         isErasing = (e.button == 2 || e.button == 5) // right click or pen eraser
         if (isDrawing) {
-            canvasctx.strokeStyle = 'black'
-            canvasctx.lineWidth = 1;
-        } else {
             canvasctx.strokeStyle = 'white'
-            canvasctx.lineWidth = 1;
+            canvasctx.lineWidth = 1
+        } else {
+            canvasctx.strokeStyle = 'black'
+            canvasctx.lineWidth = 1
         }
         // set the individual pixel
         drawPixel(canvasctx, x, y, canvasctx.strokeStyle)
@@ -954,22 +968,22 @@
 
         // greyscale thresholding
         const data = imageData.data
-        for (let i = 0; i < data.length; i++) {
-            const dataOffset = i*4
-            const bitmapOffset = Math.floor(i / 8)
-            const bitmapBitOffset = 7 - (i % 8)
-            if (rgbaThreshold(data, dataOffset)) {
-                data[dataOffset] = 255
-                data[dataOffset+1] = 255
-                data[dataOffset+2] = 255
-                data[dataOffset+3] = 255
-            } else {
-                data[dataOffset] = 0
-                data[dataOffset+1] = 0
-                data[dataOffset+2] = 0
-                data[dataOffset+3] = 255
-            }
-        }
+//        for (let i = 0; i < data.length; i++) {
+//            const dataOffset = i*4
+//            const bitmapOffset = Math.floor(i / 8)
+//            const bitmapBitOffset = 7 - (i % 8)
+//            if (rgbaThreshold(data, dataOffset)) {
+//                data[dataOffset] = 255
+//                data[dataOffset+1] = 255
+//                data[dataOffset+2] = 255
+//                data[dataOffset+3] = 255
+//            } else {
+//                data[dataOffset] = 0
+//                data[dataOffset+1] = 0
+//                data[dataOffset+2] = 0
+//                data[dataOffset+3] = 255
+//            }
+//        }
 
         ctx.putImageData(imageData, 0, 0)
 
@@ -977,16 +991,13 @@
     }
 
     function convertImageToBitmap(imageData) {
-        const bitmapData = new Uint8Array(new ArrayBuffer(canvas.width * canvas.height / 8))
-        for (let i = 0; i < imageData.length; i++) {
-            const dataOffset = i*4
-            const bitmapOffset = Math.floor(i / 8)
-            const bitmapBitOffset = 7 - (i % 8)
-            if (rgbaThreshold(imageData, dataOffset)) {
-                bitmapData[bitmapOffset] = bitmapData[bitmapOffset] & ~(1<<bitmapBitOffset)
-            } else {
-                bitmapData[bitmapOffset] = bitmapData[bitmapOffset] | (1<<bitmapBitOffset)
-            }
+        const bitmapData = new Uint8Array(new ArrayBuffer(canvas.width * canvas.height * 3))
+        for (let i = 0; i < imageData.length; i += 4)
+        {
+          const bitmapOffset = Math.floor (i / 4) * 3;
+          bitmapData[bitmapOffset] = imageData[i]
+          bitmapData[bitmapOffset + 1] = imageData[i + 1]
+          bitmapData[bitmapOffset + 2] = imageData[i + 2]
         }
         return bitmapData
     }
@@ -1014,46 +1025,138 @@
         context.fillRect(Math.floor(x / scaleX),Math.floor(y / scaleY),1,1)
     }
 
+function configureCanvas(canvasOrId, width, height, scale = null) {
+  const canvas = (typeof canvasOrId === "string")
+    ? document.getElementById(canvasOrId)
+    : canvasOrId;
+
+  if (!canvas) {
+    throw new Error("Canvas not found");
+  }
+
+  const ctx = canvas.getContext("2d");
+
+  // 1. Internal resolution (LED grid)
+  canvas.width = width;
+  canvas.height = height;
+
+  // 2. Crisp pixels
+  ctx.imageSmoothingEnabled = false;
+
+  // 3. Display size
+  if (scale) {
+    // Pixel-perfect scaling
+    canvas.style.width = (width * scale) + "px";
+    canvas.style.height = (height * scale) + "px";
+  } else {
+    // Responsive scaling
+    canvas.style.width = "100%";
+    canvas.style.aspectRatio = `${width} / ${height}`;
+  }
+
+  return ctx; // useful so you can draw immediately
+}
+
+//function text_scroll
+//(
+//  canvas_context_ao,
+//  source_ao,
+//  target_canvas_ao
+//)
+//{
+//  let offset_li = 0;
+//  let final_offset_li = source_ao.width - target_canvas_ao.width;
+//    // Determine the content of the source to be displayed
+//    // in the target.
+//  function draw()
+//  {
+//      // Clear the target canvas.
+//    canvas_context_ao.clearRect(0, 0, target_canvas_ao.width,
+//        target_canvas_ao.height);
+//      // Draw the image starting at the current offset.
+//    canvas_context_ao.drawImage(source_ao,
+//        ((offset_li < 0) ? 0 : offset_li), 0, target_canvas_ao.width,
+//        target_canvas_ao.height, 0, 0, target_canvas_ao.width,
+//        target_canvas_ao.height);
+//      // If the scrolling text has wrapped back to the beginning ...
+//    if (offset_li < 0)
+//    {
+//        // ... stop running the animation.
+//      return;
+//    }
+//      // Establish the source offset for the next iteration.
+//    offset_li = (offset_li < final_offset_li) ? (offset_li + 1) : -1;
+//      // Animate the canvas.
+//    requestAnimationFrame(draw);
+//  }  // draw
+//    // Start the animation.
+//  draw();
+//}  // text_scroll
+
     async function drawText(text) {
         const canvas2 = document.querySelector('#canvas2')
         const letterSpacing = `${document.querySelector('#letterSpacing').value}px`
         const fontSize = `${document.querySelector('#font_size').value}px`
         // let letterSpacing = '-0.7px'
-        let yOffset = 0
-        if (fontSelector.value == "Silkscreen") {
-            yOffset = -2
-            // letterSpacing = '-2px'
-        }
-
+        let yOffset = (fontSelector.value == "Silkscreen") ? /*-2 */ 0 : 0;
         canvas2.style.letterSpacing = letterSpacing
         const ctx = canvas2.getContext('2d', { willReadFrequently: true })
-        canvas2.height = 12
-        
         ctx.font=`normal ${fontSize} '${fontSelector.value}'`
         ctx.textBaseline="top"
-        const textMeasurement = ctx.measureText(text)
-        canvas2.width = textMeasurement.width
-        canvas2.style.letterSpacing = letterSpacing
-        ctx.fillStyle="white"
-        ctx.fillRect(0,0, Math.ceil(canvas2.width / canvas.width) * canvas.width, canvas2.height)
+        await document.fonts.ready;
+const spacing = parseFloat(letterSpacing) || 0;
+const unadjusted = ctx.measureText(text);
+const text_width = Math.ceil(unadjusted.width) + ((text.length - 1) * spacing);
+
+         // Clear the current canvas content.
         ctx.fillStyle="black"
-        ctx.font=`normal ${fontSize} '${fontSelector.value}'`
-        ctx.textBaseline="top"
-        ctx.fillText(text, 0, yOffset)
+        ctx.fillRect(0,0, canvas2.width, canvas2.height)
+        ctx.fillStyle="white"
+          // When the text image fits within target ...
+        if (text_width <= canvas2.width)
+        {
+            // ... the text can be displayed as is.
+          ctx.fillText(text, 0, yOffset);
+        }
+          // Otherwise the text won't fit inside the canvas.
+        else
+        {
+            // Use a hidden canvas as the source for the visible
+            // canvas content, so it can be scaled.
+          const hidden_buffer_lo = document.createElement("canvas");
+          const hidden_buffer_context_lo = hidden_buffer_lo.getContext("2d");
+          hidden_buffer_lo.width = Math.max(Math.ceil(text_width),
+              led.connection.displayInfo.width);
+          hidden_buffer_lo.height = led.connection.displayInfo.height;
+            // Render the content of the hidden buffer.
+          hidden_buffer_context_lo.fillStyle = "black";
+          hidden_buffer_context_lo.fillRect(0, 0, hidden_buffer_lo.width,
+              hidden_buffer_lo.height);
+          hidden_buffer_context_lo.fillStyle = "white";
+          hidden_buffer_context_lo.font =
+              `normal ${fontSize} '${fontSelector.value}'`;
+          hidden_buffer_context_lo.textBaseline="top"
+          hidden_buffer_context_lo.fillText(text, 0, yOffset);
+            // Scale the text using the hidden buffer.
+ctx.imageSmoothingEnabled = false;
+          ctx.drawImage(hidden_buffer_lo,
+              0, 0, hidden_buffer_lo.width, hidden_buffer_lo.height,
+              0, 0, canvas2.width, canvas2.height);
+        }
         thresholdCanvas(ctx, canvas2.width, canvas2.height)
         if (!led) {
             return
         }
 
         const frames = []
-        for (let x = 0; x < canvas2.width; x += 48) {
-            const imageData = ctx.getImageData(x, 0, canvas.width, canvas.height)
+            const imageData = ctx.getImageData(0, 0,
+                canvas2.width, canvas2.height)
             const bitmapData = convertImageToBitmap(imageData.data)
-
             frames.push(bitmapData)
-        }
-        const speed = document.querySelector('#speed').value
-        await led.setAnimation(frames, 1000, speed, 3)
+
+        let speed = Number(document.querySelector('#speed').value);
+        speed = (speed === 0) ? 0 : ((201 - speed) * 100);
+        await led.setAnimation(frames, speed, 0, 3)
     }
 
     document.querySelector('#upload').addEventListener('change', async (e) => {
@@ -1095,8 +1198,15 @@
     })
 
     document.querySelector('#clear_canvas').addEventListener('click', (e) => {
-        canvasctx.fillStyle="white"
+        canvasctx.fillStyle="black"
         canvasctx.fillRect(0, 0, canvas.width, canvas.height)
+    })
+
+    document.querySelector('#clear2').addEventListener('click', (e) => {
+      const canvas2 = document.querySelector('#canvas2')
+      const ctx2 = canvas2.getContext('2d', { willReadFrequently: true })
+        ctx2.fillStyle="white"
+        ctx2.fillRect(0, 0, canvas.width, canvas.height)
     })
 
     document.querySelector('#clear').addEventListener('click', async (e) => {
@@ -1128,10 +1238,11 @@
         led = new SpotLED(device)
         await led.connect()
         document.querySelector('#connection_status').textContent = `Connected to ${device.name}`
-        document.querySelector('#display_info').textContent = `${led.connection.displayInfo.width}x${led.connection.displayInfo.height}`
-        canvas.width = led.connection.displayInfo.width
-        canvas.height = led.connection.displayInfo.height
-        canvasctx.fillStyle="white"
+        document.querySelector('#display_info').textContent = `${led.connection.displayInfo.width}x${led.connection.displayInfo.height}`;
+  ["canvas", "canvas2"].forEach(id =>
+    configureCanvas(id, led.connection.displayInfo.width, led.connection.displayInfo.height, null)
+  );
+        canvasctx.fillStyle="black"
         canvasctx.fillRect(0, 0, canvas.width, canvas.height)
         document.querySelector('#brightness').value = led.connection.displayInfo.brightness
         document.querySelector('#brightness').disabled = false
